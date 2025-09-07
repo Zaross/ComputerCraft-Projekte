@@ -6,15 +6,11 @@ end
  ]]
 
 local function findRLA()
-  local p = {peripheral.getNames()}
-  for _,name in ipairs(p) do
-    local w = peripheral.wrap(name)
-    if type(w)=="table" and w.getInjectionRate and w.setInjectionRate and w.getProducing then
-      return w,name
-    end
-  end
-  error("Reactor Logic Adapter nicht gefunden")
+    local w = peripheral.wrap("Reactor Logic Adapter_0")
+    if not w then error("Reactor Logic Adapter nicht gefunden") end
+    return w, "Reactor Logic Adapter_0"
 end
+
 
 local function findMonitor()
   local m = peripheral.find("monitor")
