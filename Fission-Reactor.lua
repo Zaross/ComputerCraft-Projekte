@@ -164,7 +164,7 @@ end
 local function main_loop()
 	-- Search for peripherals again if one or both are missing
 	if not state or state == STATES.UNKNOWN then
-		reactor = peripheral.find("fissionReactorLogicAdapter")
+		reactor = peripheral.find("Reactor Logic Adapter_0")
 		turbine = peripheral.find("turbineValve")
 	end
 
