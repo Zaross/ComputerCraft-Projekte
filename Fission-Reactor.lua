@@ -1,4 +1,10 @@
-[07Sept.2025 00:00:20.034] [Render thread/INFO] [net.minecraft.client.Minecraft/]: Stopping!
+--[[ local function findRLA()
+    local w = peripheral.wrap("Reactor Logic Adapter_0")
+    if not w then error("Reactor Logic Adapter nicht gefunden") end
+    return w, "Reactor Logic Adapter_0"
+end
+ ]]
+
 local function findRLA()
   local p = {peripheral.getNames()}
   for _,name in ipairs(p) do
