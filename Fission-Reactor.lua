@@ -2,12 +2,24 @@ local CFG={
   adapter="Reactor Logic Adapter_0",
   title="Fusion Control",
   poll=0.25,
-  injMin=2,
-  injMax=98,
-  allowOff=true,
+  injMin=2, injMax=98, allowOff=true,
   forceScale=0.5,
-  col={bg=colors.black,card=colors.gray,stroke=colors.lightBlue,title=colors.cyan,sub=colors.lightGray,txt=colors.white,ok=colors.green,bad=colors.red,fuel=colors.lightBlue,case=colors.yellow,bar=colors.gray},
-  lang={adapter="Adapter",control="Control",energy="Buffer",temps="Temps",fuel="Fuel",case="Case",controls="Controls",on="Start",off="Stop",range="Target",min="Min",max="Max",p10="+10",m10="-10",inj="Injection",set="Set",auto="Auto",status="Status",ignited="Ignited",cold="Cold",producing="Producing",injv="Injection",plasma="Plasma",ended="Beendet.",prompt="Neue Injection Rate",water="Water",steam="Steam",dt="DT-Fuel",d="Deuterium",t="Tritium"}
+  col={
+    bg=colors.black, stroke=colors.gray,
+    card=colors.gray, panel=colors.black,
+    title=colors.white, sub=colors.lightGray, txt=colors.white,
+    ok=colors.green, bad=colors.red, fuel=colors.lightBlue, case=colors.yellow, bar=colors.gray
+  },
+  lang={
+    adapter="Adapter", control="Control", energy="Buffer", temps="Temps",
+    fuel="Fuel", case="Case", controls="Controls",
+    on="Start", off="Stop", range="Target", min="Min", max="Max",
+    p10="+10", m10="-10", inj="Injection", set="Set", auto="Auto",
+    status="Status", ignited="Ignited", cold="Cold",
+    producing="Producing", injv="Injection", plasma="Plasma",
+    ended="Beendet.", prompt="Neue Injection Rate",
+    water="Water", steam="Steam", dt="DT-Fuel", d="Deuterium", t="Tritium"
+  }
 }
 
 local rla=peripheral.wrap(CFG.adapter) if not rla then error("Adapter nicht gefunden") end
@@ -20,7 +32,7 @@ local W,H=term.getSize()
 
 local UI={}
 local function rect(x1,y1,x2,y2,c) if x1>x2 or y1>y2 then return end term.setBackgroundColor(c) paintutils.drawFilledBox(math.max(1,x1),math.max(1,y1),math.min(W,x2),math.min(H,y2),c) term.setBackgroundColor(CFG.col.bg) end
-local function box(x1,y1,x2,y2) paintutils.drawBox(math.max(1,x1),math.max(1,y1),math.min(W,x2),math.min(H,y2),CFG.col.stroke) end
+local function box(x1,y1,x2,y2,c) paintutils.drawBox(math.max(1,x1),math.max(1,y1),math.min(W,x2),math.min(H,y2),c or CFG.col.stroke) end
 local function txt(x,y,s,c) if x<1 or x>W or y<1 or y>H then return end term.setTextColor(c or CFG.col.txt) term.setCursorPos(x,y) term.write(s) term.setTextColor(CFG.col.txt) end
 local function center(y,s,c) local x=math.max(1,math.floor((W-#s)/2)+1) txt(x,y,s,c) end
 local function btn(id,x1,y1,x2,y2,label,bg,fg) rect(x1,y1,x2,y2,bg) local cx=math.max(x1,math.floor((x1+x2-#label)/2)) txt(cx,y1,label,fg) UI[id]={x1=x1,y1=y1,x2=x2,y2=y2} end
@@ -34,15 +46,18 @@ local auto=true
 local targetMin,targetMax=0.30,0.80
 
 local PAD=2
-local HEADER=5
+local HEADER=4
 local FOOT=2
-local xSide=W-math.max(32,math.floor(W*0.26))+1
+local xSide=W-math.max(30,math.floor(W*0.26))+1
 local colsW=math.floor((xSide-1-PAD*4)/3)
 local x1=PAD
 local x2=x1+colsW+PAD
 local x3=x2+colsW+PAD
 local yTop=HEADER+1
 local yBot=H-FOOT-1
+
+local S={ctrl=0,energy=0,plasma=0,case=0}
+local function ease(cur,target,alpha) return cur+(target-cur)*alpha end
 
 local function header()
   rect(1,1,W,HEADER,CFG.col.bg)
@@ -55,14 +70,20 @@ end
 local function barV(x,y1,y2,ratio,bg,fill)
   ratio=clamp(ratio,0,1)
   rect(x,y1,x+12,y2,bg)
-  if ratio>0 then local h=y2-y1+1 local fh=math.max(1,math.floor(h*ratio+0.5)) rect(x+1,y2-fh+1,x+11,y2-1,fill) end
+  if ratio>0 then
+    local h=y2-y1+1
+    local fh=math.max(1,math.floor(h*ratio+0.5))
+    rect(x+2,y2-fh+2,x+10,y2-1,fill)
+    paintutils.drawLine(x+2,y2-fh+1,x+10,y2-fh+1,colors.white)
+  end
 end
 
 local function gaugeEnergy(x,y1,y2,ratio)
-  rect(x,y1,x+colsW-1,y2,CFG.col.card)
-  local mid=y1+math.floor((y2-y1)*(1-ratio))
-  rect(x+2,y1+1,x+colsW-3,mid-1,CFG.col.bad)
-  rect(x+2,mid,x+colsW-3,y2-1,CFG.col.ok)
+  rect(x,y1,x+colsW-1,y2,CFG.col.panel)
+  rect(x+1,y1+1,x+colsW-2,y2-1,CFG.col.card)
+  local mid=y1+1+math.floor((y2-2-y1)*(1-ratio))
+  rect(x+2,y1+2,x+colsW-3,mid-1,CFG.col.bad)
+  rect(x+2,mid,x+colsW-3,y2-2,CFG.col.ok)
 end
 
 local function injClamp(v)
@@ -79,40 +100,39 @@ local function injSet(v)
 end
 
 local function controls(prod)
-  local xS=xSide
-  box(xS,yTop,W-PAD,yBot)
+  box(xSide,yTop,W-PAD,yBot)
   local y=yTop+1
-  btn("on", xS+2,y,xS+11,y,CFG.lang.on,CFG.col.ok,CFG.col.bg)
-  btn("off",xS+13,y,W-PAD-1,y,CFG.lang.off,CFG.col.bad,CFG.col.bg)
+  btn("on", xSide+2,y,xSide+11,y,CFG.lang.on,CFG.col.ok,CFG.col.panel)
+  btn("off",xSide+13,y,W-PAD-1,y,CFG.lang.off,CFG.col.bad,CFG.col.panel)
   y=y+2
-  txt(xS+2,y,CFG.lang.inj,CFG.col.txt)
+  txt(xSide+2,y,CFG.lang.inj,CFG.col.txt)
   y=y+1
-  btn("injm10",xS+2,y,xS+6,y,CFG.lang.m10,CFG.col.card,CFG.col.bg)
-  btn("injm1", xS+8,y,xS+10,y,"-1",CFG.col.card,CFG.col.bg)
-  btn("injp1", xS+12,y,xS+14,y,"+1",CFG.col.card,CFG.col.bg)
-  btn("injp10",xS+16,y,xS+20,y,CFG.lang.p10,CFG.col.card,CFG.col.bg)
-  btn("injs",  xS+22,y,W-PAD-1,y,CFG.lang.set,CFG.col.card,CFG.col.bg)
+  btn("injm10",xSide+2,y,xSide+6,y,CFG.lang.m10,CFG.col.card,CFG.col.panel)
+  btn("injm1", xSide+8,y,xSide+10,y,"-1",CFG.col.card,CFG.col.panel)
+  btn("injp1", xSide+12,y,xSide+14,y,"+1",CFG.col.card,CFG.col.panel)
+  btn("injp10",xSide+16,y,xSide+20,y,CFG.lang.p10,CFG.col.card,CFG.col.panel)
+  btn("injs",  xSide+22,y,W-PAD-1,y,CFG.lang.set,CFG.col.card,CFG.col.panel)
   y=y+2
-  txt(xS+2,y,CFG.lang.auto,CFG.col.txt)
-  btn("auto",xS+12,y,W-PAD-1,y,auto and CFG.lang.on or CFG.lang.off,auto and CFG.col.ok or CFG.col.bad,CFG.col.bg)
+  txt(xSide+2,y,CFG.lang.auto,CFG.col.txt)
+  btn("auto",xSide+12,y,W-PAD-1,y,auto and CFG.lang.on or CFG.lang.off,auto and CFG.col.ok or CFG.col.bad,CFG.col.panel)
   y=y+2
-  txt(xS+2,y,CFG.lang.range,CFG.col.txt)
+  txt(xSide+2,y,CFG.lang.range,CFG.col.txt)
   y=y+1
-  txt(xS+2,y,CFG.lang.min,CFG.col.txt)
-  btn("minp",xS+7,y,xS+11,y,CFG.lang.p10,CFG.col.card,CFG.col.bg)
-  btn("minm",xS+13,y,xS+17,y,CFG.lang.m10,CFG.col.card,CFG.col.bg)
-  txt(xS+19,y,string.format("%d%%",math.floor(targetMin*100)),CFG.col.txt)
+  txt(xSide+2,y,CFG.lang.min,CFG.col.txt)
+  btn("minp",xSide+7,y,xSide+11,y,CFG.lang.p10,CFG.col.card,CFG.col.panel)
+  btn("minm",xSide+13,y,xSide+17,y,CFG.lang.m10,CFG.col.card,CFG.col.panel)
+  txt(xSide+19,y,string.format("%d%%",math.floor(targetMin*100)),CFG.col.txt)
   y=y+2
-  txt(xS+2,y,CFG.lang.max,CFG.col.txt)
-  btn("maxp",xS+7,y,xS+11,y,CFG.lang.p10,CFG.col.card,CFG.col.bg)
-  btn("maxm",xS+13,y,xS+17,y,CFG.lang.m10,CFG.col.card,CFG.col.bg)
-  txt(xS+19,y,string.format("%d%%",math.floor(targetMax*100)),CFG.col.txt)
+  txt(xSide+2,y,CFG.lang.max,CFG.col.txt)
+  btn("maxp",xSide+7,y,xSide+11,y,CFG.lang.p10,CFG.col.card,CFG.col.panel)
+  btn("maxm",xSide+13,y,xSide+17,y,CFG.lang.m10,CFG.col.card,CFG.col.panel)
+  txt(xSide+19,y,string.format("%d%%",math.floor(targetMax*100)),CFG.col.txt)
   y=y+2
-  txt(xS+2,y,CFG.lang.status,CFG.col.txt)
+  txt(xSide+2,y,CFG.lang.status,CFG.col.txt)
   local ign=rla.isIgnited and rla.isIgnited() or false
-  txt(xS+2,y+1,ign and CFG.lang.ignited or CFG.lang.cold,ign and CFG.col.ok or CFG.col.sub)
-  txt(xS+2,y+2,CFG.lang.producing..": "..fmt(prod,"J/t"),CFG.col.txt)
-  txt(xS+2,y+3,CFG.lang.injv..": "..tostring(inj),CFG.col.txt)
+  txt(xSide+2,y+1,ign and CFG.lang.ignited or CFG.lang.cold,ign and CFG.col.ok or CFG.col.sub)
+  txt(xSide+2,y+2,CFG.lang.producing..": "..fmt(prod,"J/t"),CFG.col.txt)
+  txt(xSide+2,y+3,CFG.lang.injv..": "..tostring(inj),CFG.col.txt)
 end
 
 local function footer(water,steam,fuel,deu,tri,pHeat,pMax,cHeat,cMax)
@@ -147,26 +167,37 @@ local function drawAll()
   local cMax=rla.getMaxCaseHeat and (rla.getMaxCaseHeat() or 0) or 0
   inj=rla.getInjectionRate() or inj
 
+  local rCtrl=(inj/CFG.injMax)
+  local rEnergy=(eMax>0) and (eNow/eMax) or 0
+  local rPlasma=(pMax>0) and (pHeat/pMax) or 0
+  local rCase=(cMax>0) and (cHeat/cMax) or 0
+
+  if S.ctrl==0 then S={ctrl=rCtrl,energy=rEnergy,plasma=rPlasma,case=rCase} else
+    S.ctrl=ease(S.ctrl,rCtrl,0.3)
+    S.energy=ease(S.energy,rEnergy,0.3)
+    S.plasma=ease(S.plasma,rPlasma,0.3)
+    S.case=ease(S.case,rCase,0.3)
+  end
+
   header()
 
   txt(x1,yTop-1,CFG.lang.control,CFG.col.sub)
-  rect(x1,yTop,x1+colsW-1,yBot,CFG.col.card)
-  local cRatio=(rla.getInjectionRate() or 0)/CFG.injMax
-  barV(x1+math.floor(colsW/2)-6,yTop+1,yBot-1,cRatio,CFG.col.bar,CFG.col.txt)
-  txt(x1+2,yBot+1,string.format("%.1f%%",cRatio*100),CFG.col.sub)
+  rect(x1,yTop,x1+colsW-1,yBot,CFG.col.panel)
+  rect(x1+1,yTop+1,x1+colsW-2,yBot-1,CFG.col.card)
+  barV(x1+math.floor(colsW/2)-6,yTop+2,yBot-2,S.ctrl,CFG.col.bar,CFG.col.ok)
+  txt(x1+2,yBot+1,string.format("%.1f%%",S.ctrl*100),CFG.col.sub)
 
   txt(x2,yTop-1,CFG.lang.energy,CFG.col.sub)
-  gaugeEnergy(x2,yTop,yBot,(eMax>0) and (eNow/eMax) or 0)
+  gaugeEnergy(x2,yTop,yBot,S.energy)
   txt(x2+2,yBot+1,fmt(eNow,"J"),CFG.col.sub)
 
   txt(x3,yTop-1,CFG.lang.temps,CFG.col.sub)
-  rect(x3,yTop,x3+colsW-1,yBot,CFG.col.bg)
-  rect(x3+2,yTop+1,x3+13,yBot-1,CFG.col.card)
-  rect(x3+colsW-14,yTop+1,x3+colsW-3,yBot-1,CFG.col.card)
-  local pr=(pMax and pMax>0) and (pHeat/pMax) or 0
-  local cr=(cMax and cMax>0) and (cHeat/cMax) or 0
-  barV(x3+2,yTop+1,yBot-1,pr,CFG.col.card,CFG.col.fuel)
-  barV(x3+colsW-14,yTop+1,yBot-1,cr,CFG.col.card,CFG.col.case)
+  rect(x3,yTop,x3+colsW-1,yBot,CFG.col.panel)
+  rect(x3+1,yTop+1,x3+colsW-2,yBot-1,CFG.col.card)
+  rect(x3+3,yTop+2,x3+13,yBot-2,CFG.col.panel)
+  rect(x3+colsW-14,yTop+2,x3+colsW-4,yBot-2,CFG.col.panel)
+  barV(x3+3,yTop+2,yBot-2,S.plasma,CFG.col.panel,CFG.col.fuel)
+  barV(x3+colsW-14,yTop+2,yBot-2,S.case,CFG.col.panel,CFG.col.case)
   txt(x3+2,yBot+1,CFG.lang.fuel,CFG.col.fuel)
   txt(x3+colsW-14,yBot+1,CFG.lang.case,CFG.col.case)
 
