@@ -1,236 +1,248 @@
-local state, data, reactor, turbine, info_window, rules_window
-
-local STATES = {
-	READY = 1, -- Reactor is off and can be started with the lever
-	RUNNING = 2, -- Reactor is running and all rules are met
-	ESTOP = 3, -- Reactor is stopped due to rule(s) being violated
-	UNKNOWN = 4, -- Reactor or turbine peripherals are missing
+local CFG={
+  adapter="Reactor Logic Adapter_0",
+  title="Fusion Reactor Console",
+  poll=0.25,
+  injMin=2,
+  injMax=98,
+  allowOff=true,
+  scale={xl=0.5,l=0.75,m=1,s=1.5},
+  col={
+    bg=colors.black, panel=colors.gray, stroke=colors.lightBlue,
+    title=colors.cyan, sub=colors.lightGray, text=colors.white,
+    ok=colors.green, warn=colors.orange, bad=colors.red,
+    fuel=colors.lightBlue, case=colors.yellow, bar=colors.gray, white=colors.white
+  },
+  lang={
+    adapter="Adapter", control="Control", energy="Buffer", temps="Temperaturen",
+    fuel="Fuel", case="Case", controls="Steuerung",
+    on="Start", off="Stop", range="Zielbereich", min="Min", max="Max",
+    p10="+10", m10="-10", inj="Injection", set="Set", auto="Auto-Reg",
+    status="Status", ignited="Ignited", cold="Cold", producing="Produktion",
+    injv="Injection", plasma="Plasma", ended="Beendet.", prompt="Neue Injection Rate",
+    water="Wasser", steam="Dampf", dt="DT-Fuel", d="Deuterium", t="Tritium"
+  }
 }
 
-------------------------------------------------
+local rla=peripheral.wrap(CFG.adapter) if not rla then error("Adapter nicht gefunden") end
+local mon=peripheral.find("monitor")
+local native=term.current()
+local function use(t) if t then term.redirect(t) else term.redirect(native) end term.setBackgroundColor(CFG.col.bg) term.setTextColor(CFG.col.text) term.clear() term.setCursorPos(1,1) end
+use(mon)
+if mon then
+  local mw=term.getSize()
+  if mw>=120 then mon.setTextScale(CFG.scale.xl)
+  elseif mw>=84 then mon.setTextScale(CFG.scale.l)
+  elseif mw>=60 then mon.setTextScale(CFG.scale.m)
+  else mon.setTextScale(CFG.scale.s) end
+  use(mon)
+end
+local W,H=term.getSize()
 
-local rules = {}
-
-local function add_rule(name, fn)
-	table.insert(rules, function()
-		local ok, rule_met, value = pcall(fn)
-		if ok then
-			return rule_met, string.format("%s (%s)", name, value)
-		else
-			return false, name
-		end
-	end)
+local UI={}
+local function rect(x1,y1,x2,y2,c) term.setBackgroundColor(c) paintutils.drawFilledBox(x1,y1,x2,y2,c) term.setBackgroundColor(CFG.col.bg) end
+local function box(x1,y1,x2,y2) paintutils.drawBox(x1,y1,x2,y2,CFG.col.stroke) end
+local function txt(x,y,s,c) term.setTextColor(c or CFG.col.text) term.setCursorPos(x,y) term.write(s) term.setTextColor(CFG.col.text) end
+local function center(y,s,c) local x=math.max(1,math.floor((W-#s)/2)+1) txt(x,y,s,c) end
+local function btn(id,x1,y1,x2,y2,label,bg,fg) rect(x1,y1,x2,y2,bg) local cx=math.floor((x1+x2-#label)/2) txt(cx,y1,label,fg) UI[id]={x1=x1,y1=y1,x2=x2,y2=y2} end
+local function hit(id,x,y) local b=UI[id]; return b and x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 end
+local function clamp(v,a,b) if v<a then return a elseif v>b then return b else return v end end
+local function fmt(n,u) if type(n)~="number" then return "n/a" end local a=math.abs(n)
+  if a>=1e12 then return string.format("%.2fT",n/1e12)..(u or "") end
+  if a>=1e9 then return string.format("%.2fG",n/1e9)..(u or "") end
+  if a>=1e6 then return string.format("%.2fM",n/1e6)..(u or "") end
+  if a>=1e3 then return string.format("%.2fk",n/1e3)..(u or "") end
+  return string.format("%.0f",n)..(u or "")
 end
 
-add_rule("REACTOR TEMPERATURE   <= 745K", function()
-	local value = string.format("%3dK", math.ceil(data.reactor_temp))
-	return data.reactor_temp <= 745, value
-end)
+local inj=rla.getInjectionRate() or 0
+local lastNonZero=inj>0 and inj or CFG.injMin
+local auto=true
+local targetMin,targetMax=0.30,0.80
 
-add_rule("REACTOR DAMAGE        <=  10%", function()
-	local value = string.format("%3d%%", math.ceil(data.reactor_damage * 100))
-	return data.reactor_damage <= 0.10, value
-end)
+local PAD=2
+local COLS=3
+local sideW=math.max(30,math.floor(W*0.28))
+local colW=math.floor((W - sideW - PAD*(COLS+2)) / COLS)
+local graphH=H-10
+local x1=PAD
+local x2=x1+colW+PAD
+local x3=x2+colW+PAD
+local xSide=W-sideW-PAD+1
+local yTop=6
+local yBot=yTop+graphH-1
 
-add_rule("REACTOR COOLANT LEVEL >=  95%", function()
-	local value = string.format("%3d%%", math.floor(data.reactor_coolant * 100))
-	return data.reactor_coolant >= 0.95, value
-end)
-
-add_rule("REACTOR WASTE LEVEL   <=  90%", function()
-	local value = string.format("%3d%%", math.ceil(data.reactor_waste * 100))
-	return data.reactor_waste <= 0.90, value
-end)
-
-add_rule("TURBINE ENERGY LEVEL  <=  95%", function()
-	local value = string.format("%3d%%", math.ceil(data.turbine_energy * 100))
-	return data.turbine_energy <= 0.95, value
-end)
-
-local function all_rules_met()
-	for i, rule in ipairs(rules) do
-		if not rule() then
-			return false
-		end
-	end
-	-- Allow manual emergency stop with SCRAM button
-	return state ~= STATES.RUNNING or data.reactor_on
+local function header()
+  rect(1,1,W,5,CFG.col.bg)
+  box(1,1,W,H)
+  center(2,CFG.title,CFG.col.title)
+  center(3,CFG.lang.adapter..": "..CFG.adapter,CFG.col.sub)
+  paintutils.drawLine(PAD,5,W-PAD,5,CFG.col.stroke)
 end
 
-------------------------------------------------
-
-local function update_data()
-	data = {
-		lever_on = redstone.getInput("top"),
-
-		reactor_on = reactor.getStatus(),
-		reactor_burn_rate = reactor.getBurnRate(),
-		reactor_max_burn_rate = reactor.getMaxBurnRate(),
-		reactor_temp = reactor.getTemperature(),
-		reactor_damage = reactor.getDamagePercent(),
-		reactor_coolant = reactor.getCoolantFilledPercentage(),
-		reactor_waste = reactor.getWasteFilledPercentage(),
-
-		turbine_energy = turbine.getEnergyFilledPercentage(),
-	}
+local function barV(x,y1,y2,ratio,bg,fill)
+  ratio=clamp(ratio,0,1)
+  rect(x,y1,x+12,y2,bg)
+  if ratio>0 then
+    local h=y2-y1+1
+    local fh=math.max(1,math.floor(h*ratio+0.5))
+    rect(x+1,y2-fh+1,x+11,y2-1,fill)
+  end
 end
 
-------------------------------------------------
-
-local function colored(text, fg, bg)
-	term.setTextColor(fg or colors.white)
-	term.setBackgroundColor(bg or colors.black)
-	term.write(text)
+local function gaugeEnergy(x,y1,y2,ratio)
+  rect(x,y1,x+colW-1,y2,CFG.col.panel)
+  local mid=y1+math.floor((y2-y1)*(1-ratio))
+  rect(x+2,y1+1,x+colW-3,mid-1,CFG.col.bad)
+  rect(x+2,mid,x+colW-3,y2-1,CFG.col.ok)
 end
 
-local function make_section(name, x, y, w, h)
-	for row = 1, h do
-		term.setCursorPos(x, y + row - 1)
-		local char = (row == 1 or row == h) and "\127" or " "
-		colored("\127" .. string.rep(char, w - 2) .. "\127", colors.gray)
-	end
-
-	term.setCursorPos(x + 2, y)
-	colored(" " .. name .. " ")
-
-	return window.create(term.current(), x + 2, y + 2, w - 4, h - 4)
+local function panelTitles()
+  txt(x1,yTop-2,CFG.lang.control,CFG.col.sub)
+  txt(x2,yTop-2,CFG.lang.energy,CFG.col.sub)
+  txt(x3,yTop-2,CFG.lang.temps,CFG.col.sub)
+  txt(xSide+1,yTop-2,CFG.lang.controls,CFG.col.sub)
 end
 
-local function update_info()
-	local prev_term = term.redirect(info_window)
-
-	term.clear()
-	term.setCursorPos(1, 1)
-
-	if state == STATES.UNKNOWN then
-		colored("ERROR RETRIEVING DATA", colors.red)
-		return
-	end
-
-	colored("REACTOR: ")
-	colored(data.reactor_on and "ON " or "OFF", data.reactor_on and colors.green or colors.red)
-	colored("  LEVER: ")
-	colored(data.lever_on and "ON " or "OFF", data.lever_on and colors.green or colors.red)
-	colored("  R. LIMIT: ")
-	colored(string.format("%4.1f", data.reactor_burn_rate), colors.blue)
-	colored("/", colors.lightGray)
-	colored(string.format("%4.1f", data.reactor_max_burn_rate), colors.blue)
-
-	term.setCursorPos(1, 3)
-
-	colored("STATUS: ")
-	if state == STATES.READY then
-		colored("READY, flip lever to start", colors.blue)
-	elseif state == STATES.RUNNING then
-		colored("RUNNING, flip lever to stop", colors.green)
-	elseif state == STATES.ESTOP and not all_rules_met() then
-		colored("EMERGENCY STOP, safety rules violated", colors.red)
-	elseif state == STATES.ESTOP then
-		colored("EMERGENCY STOP, toggle lever to reset", colors.red)
-	end -- STATES.UNKNOWN cases handled above
-
-	term.redirect(prev_term)
+local function injClamp(v)
+  v=math.floor(v+0.5)
+  if v<=0 then if CFG.allowOff then return 0 else return CFG.injMin end end
+  if v>0 and v<CFG.injMin then return CFG.injMin end
+  return clamp(v,0,CFG.injMax)
 end
 
-local estop_reasons = {}
-
-local function update_rules()
-	local prev_term = term.redirect(rules_window)
-
-	term.clear()
-
-	if state ~= STATES.ESTOP then
-		estop_reasons = {}
-	end
-
-	for i, rule in ipairs(rules) do
-		local ok, text = rule()
-		term.setCursorPos(1, i)
-		if ok and not estop_reasons[i] then
-			colored("[  OK  ] ", colors.green)
-			colored(text, colors.lightGray)
-		else
-			colored("[ FAIL ] ", colors.red)
-			colored(text, colors.red)
-			estop_reasons[i] = true
-		end
-	end
-
-	term.redirect(prev_term)
+local function injSet(v)
+  v=injClamp(v)
+  local ok=pcall(function() rla.setInjectionRate(v) end)
+  if ok then inj=v if v>0 then lastNonZero=v end end
 end
 
-------------------------------------------------
-
-local function main_loop()
-	-- Search for peripherals again if one or both are missing
-	if not state or state == STATES.UNKNOWN then
-		reactor = peripheral.find("Reactor Logic Adapter_0")
-		turbine = peripheral.find("turbineValve")
-	end
-
-	if not pcall(update_data) then
-		-- Error getting data (either reactor or turbine is nil?)
-		data = {}
-		state = STATES.UNKNOWN
-	elseif data.reactor_on == nil then
-		-- Reactor is not connected
-		state = STATES.UNKNOWN
-	elseif data.turbine_energy == nil then
-		-- Turbine is not connected
-		state = STATES.UNKNOWN
-	elseif not state then
-		-- Program just started, get current state from lever
-		state = data.lever_on and STATES.RUNNING or STATES.READY
-	elseif state == STATES.READY and data.lever_on then
-		-- READY -> RUNNING
-		state = STATES.RUNNING
-		-- Activate reactor
-		pcall(reactor.activate)
-		data.reactor_on = true
-	elseif state == STATES.RUNNING and not data.lever_on then
-		-- RUNNING -> READY
-		state = STATES.READY
-	elseif state == STATES.ESTOP and not data.lever_on then
-		-- ESTOP -> READY
-		state = STATES.READY
-	elseif state == STATES.UNKNOWN then
-		-- UNKNOWN -> ESTOP
-		state = data.lever_on and STATES.ESTOP or STATES.READY
-		estop_reasons = {}
-	end
-
-	-- Always enter ESTOP if safety rules are not met
-	if state ~= STATES.UNKNOWN and not all_rules_met() then
-		state = STATES.ESTOP
-	end
-
-	-- SCRAM reactor if not running
-	if state ~= STATES.RUNNING and reactor then
-		pcall(reactor.scram)
-	end
-
-	-- Update info and rules windows
-	pcall(update_info)
-	pcall(update_rules)
-
-	sleep() -- Other calls should already yield, this is just in case
-	return main_loop()
+local function controls(prod)
+  box(xSide,yTop,W-PAD,yBot)
+  local y=yTop+1
+  btn("on", xSide+2,y,xSide+12,y,CFG.lang.on,CFG.col.ok,CFG.col.bg)
+  btn("off",xSide+14,y,W-PAD-1,y,CFG.lang.off,CFG.col.bad,CFG.col.bg)
+  y=y+2
+  txt(xSide+2,y,CFG.lang.range,CFG.col.text)
+  y=y+1
+  local barY=y
+  rect(xSide+2,barY,W-PAD-1,barY,CFG.col.bad)
+  local bw=(W-PAD-1)-(xSide+2)
+  local rl=xSide+2+math.floor(bw*targetMin)
+  local rr=xSide+2+math.floor(bw*targetMax)
+  paintutils.drawLine(rl,barY,rr,barY,CFG.col.ok)
+  y=y+1
+  txt(xSide+2,y,CFG.lang.min,CFG.col.text)
+  btn("minp",xSide+7,y,xSide+11,y,CFG.lang.p10,CFG.col.panel,CFG.col.bg)
+  btn("minm",xSide+13,y,xSide+17,y,CFG.lang.m10,CFG.col.panel,CFG.col.bg)
+  txt(xSide+19,y,string.format("%d%%",math.floor(targetMin*100)),CFG.col.text)
+  y=y+2
+  txt(xSide+2,y,CFG.lang.max,CFG.col.text)
+  btn("maxp",xSide+7,y,xSide+11,y,CFG.lang.p10,CFG.col.panel,CFG.col.bg)
+  btn("maxm",xSide+13,y,xSide+17,y,CFG.lang.m10,CFG.col.panel,CFG.col.bg)
+  txt(xSide+19,y,string.format("%d%%",math.floor(targetMax*100)),CFG.col.text)
+  y=y+2
+  txt(xSide+2,y,CFG.lang.inj,CFG.col.text)
+  y=y+1
+  btn("injm10",xSide+2,y,xSide+6,y,CFG.lang.m10,CFG.col.panel,CFG.col.bg)
+  btn("injm1", xSide+8,y,xSide+10,y,"-1",CFG.col.panel,CFG.col.bg)
+  btn("injp1", xSide+12,y,xSide+14,y,"+1",CFG.col.panel,CFG.col.bg)
+  btn("injp10",xSide+16,y,xSide+20,y,CFG.lang.p10,CFG.col.panel,CFG.col.bg)
+  btn("injs",  xSide+22,y,W-PAD-1,y,CFG.lang.set,CFG.col.panel,CFG.col.bg)
+  y=y+2
+  txt(xSide+2,y,CFG.lang.auto,CFG.col.text)
+  btn("auto",xSide+12,y,W-PAD-1,y,auto and CFG.lang.on or CFG.lang.off,auto and CFG.col.ok or CFG.col.bad,CFG.col.bg)
+  y=y+2
+  txt(xSide+2,y,CFG.lang.status,CFG.col.text)
+  local ign=rla.isIgnited and rla.isIgnited() or false
+  y=y+1
+  txt(xSide+2,y,ign and CFG.lang.ignited or CFG.lang.cold,ign and CFG.col.ok or CFG.col.sub)
+  y=y+1
+  txt(xSide+2,y,CFG.lang.producing..": "..fmt(prod,"J/t"),CFG.col.text)
+  y=y+1
+  txt(xSide+2,y,CFG.lang.injv..": "..tostring(inj),CFG.col.text)
 end
 
-term.setPaletteColor(colors.black, 0x000000)
-term.setPaletteColor(colors.gray, 0x343434)
-term.setPaletteColor(colors.lightGray, 0xababab)
-term.setPaletteColor(colors.red, 0xdb2d20)
-term.setPaletteColor(colors.green, 0x01a252)
-term.setPaletteColor(colors.blue, 0x01a0e4)
+local function footer(water,steam,fuel,deu,tri,pHeat,pMax,cHeat,cMax)
+  paintutils.drawLine(PAD,H-2,W-PAD,H-2,CFG.col.stroke)
+  txt(PAD,H-1,CFG.lang.plasma.." "..fmt(pHeat,"K").."/"..fmt(pMax,"K").."  "..CFG.lang.case.." "..fmt(cHeat,"K").."/"..fmt(cMax,"K"),CFG.col.sub)
+  txt(PAD,H,CFG.lang.water.." "..fmt(water).."  "..CFG.lang.steam.." "..fmt(steam).."  "..CFG.lang.dt.." "..fmt(fuel).."  "..CFG.lang.d.." "..fmt(deu).."  "..CFG.lang.t.." "..fmt(tri),CFG.col.sub)
+end
 
-term.clear()
-local width = term.getSize()
-info_window = make_section("INFORMATION", 2, 2, width - 2, 7)
-rules_window = make_section("SAFETY RULES", 2, 10, width - 2, 9)
+local function promptNumber(prompt,def)
+  if mon then use(nil) end
+  term.clear() term.setCursorPos(1,1) txt(1,1,prompt.." ("..def.."):",CFG.col.title)
+  term.setTextColor(CFG.col.text)
+  local s=read() local n=tonumber(s) if not n then n=def end
+  if mon then use(mon) end
+  return n
+end
 
-parallel.waitForAny(main_loop, function()
-	os.pullEventRaw("terminate")
-end)
+local function autoStep(er)
+  if not auto then return end
+  if er<targetMin then injSet(inj+1) elseif er>targetMax then injSet(inj-1) end
+end
 
-os.reboot()
+local function drawAll()
+  local prod=rla.getProducing() or 0
+  local eNow=rla.getEnergy() or 0
+  local eMax=rla.getMaxEnergy() or 0
+  local water=rla.getWater() or 0
+  local steam=rla.getSteam() or 0
+  local fuel=rla.getFuel() or 0
+  local deu=rla.getDeuterium() or 0
+  local tri=rla.getTritium() or 0
+  local pHeat=rla.getPlasmaHeat and (rla.getPlasmaHeat() or 0) or 0
+  local pMax=rla.getMaxPlasmaHeat and (rla.getMaxPlasmaHeat() or 0) or 0
+  local cHeat=rla.getCaseHeat and (rla.getCaseHeat() or 0) or 0
+  local cMax=rla.getMaxCaseHeat and (rla.getMaxCaseHeat() or 0) or 0
+  inj=rla.getInjectionRate() or inj
+  header()
+  panelTitles()
+  rect(x1,yTop,x1+colW-1,yBot,CFG.col.panel)
+  local cRatio=(rla.getInjectionRate() or 0)/CFG.injMax
+  barV(x1+math.floor(colW/2)-6,yTop+1,yBot-1,cRatio,CFG.col.bar,CFG.col.white)
+  txt(x1+2,yBot+1,string.format("%.1f%%",cRatio*100),CFG.col.sub)
+  gaugeEnergy(x2,yTop,yBot,(eMax>0) and (eNow/eMax) or 0)
+  txt(x2+2,yBot+1,fmt(eNow,"J"),CFG.col.sub)
+  rect(x3,yTop,x3+colW-1,yBot,CFG.col.bg)
+  rect(x3+2,yTop+1,x3+13,yBot-1,CFG.col.panel)
+  rect(x3+colW-14,yTop+1,x3+colW-3,yBot-1,CFG.col.panel)
+  local pr=(pMax and pMax>0) and (pHeat/pMax) or 0
+  local cr=(cMax and cMax>0) and (cHeat/cMax) or 0
+  barV(x3+2,yTop+1,yBot-1,pr,CFG.col.panel,CFG.col.fuel)
+  barV(x3+colW-14,yTop+1,yBot-1,cr,CFG.col.panel,CFG.col.case)
+  txt(x3+2,yBot+1,CFG.lang.fuel,CFG.col.fuel)
+  txt(x3+colW-14,yBot+1,CFG.lang.case,CFG.col.case)
+  controls(prod)
+  footer(water,steam,fuel,deu,tri,pHeat,pMax,cHeat,cMax)
+  return eNow,eMax
+end
+
+drawAll()
+local t=os.startTimer(CFG.poll)
+while true do
+  local e={os.pullEvent()}
+  if e[1]=="terminate" then break end
+  if e[1]=="char" and e[2]=="q" then break end
+  if e[1]=="timer" and e[2]==t then
+    local eNow,eMax=drawAll()
+    autoStep((eMax>0) and (eNow/eMax) or 0)
+    t=os.startTimer(CFG.poll)
+  elseif e[1]=="monitor_touch" and mon and e[2]==peripheral.getName(mon) then
+    local x,y=e[3],e[4]
+    if hit("on",x,y) then injSet(lastNonZero>0 and lastNonZero or CFG.injMin) drawAll() end
+    if hit("off",x,y) and CFG.allowOff then injSet(0) drawAll() end
+    if hit("minp",x,y) then targetMin=clamp(targetMin+0.10,0,0.9) if targetMin>targetMax then targetMax=targetMin end drawAll() end
+    if hit("minm",x,y) then targetMin=clamp(targetMin-0.10,0,0.9) if targetMin>targetMax then targetMax=targetMin end drawAll() end
+    if hit("maxp",x,y) then targetMax=clamp(targetMax+0.10,0.1,1) if targetMax<targetMin then targetMin=targetMax end drawAll() end
+    if hit("maxm",x,y) then targetMax=clamp(targetMax-0.10,0.1,1) if targetMax<targetMin then targetMin=targetMax end drawAll() end
+    if hit("injm10",x,y) then injSet(inj-10) drawAll() end
+    if hit("injm1",x,y)  then injSet(inj-1)  drawAll() end
+    if hit("injp1",x,y)  then injSet(inj+1)  drawAll() end
+    if hit("injp10",x,y) then injSet(inj+10) drawAll() end
+    if hit("injs",x,y)   then local n=promptNumber(CFG.lang.prompt,inj) injSet(n) drawAll() end
+    if hit("auto",x,y)   then auto=not auto drawAll() end
+  end
+end
+
+use(nil) term.clear() term.setCursorPos(1,1) print(CFG.lang.ended)
