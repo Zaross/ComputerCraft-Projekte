@@ -1,16 +1,8 @@
---[[ local function findRLA()
-    local w = peripheral.wrap("Reactor Logic Adapter_0")
-    if not w then error("Reactor Logic Adapter nicht gefunden") end
-    return w, "Reactor Logic Adapter_0"
-end
- ]]
-
 local function findRLA()
     local w = peripheral.wrap("Reactor Logic Adapter_0")
     if not w then error("Reactor Logic Adapter nicht gefunden") end
     return w, "Reactor Logic Adapter_0"
 end
-
 
 local function findMonitor()
   local m = peripheral.find("monitor")
